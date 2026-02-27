@@ -47,12 +47,13 @@ volLen        = input.int  (20,   "Volume SMA Length",       minval=5,   maxval=
 requireVolume = input.bool (true, "Require Volume Surge",                             group=grp_vol)
 
 // Stop Loss
-slMode        = input.string("Box Floor", "Stop Loss Mode",
-                             options=["Box Floor", "ATR Trailing", "Both (tightest)"], group=grp_sl)
-atrLen_sl     = input.int  (14,   "ATR Length (SL)",         minval=5,               group=grp_sl)
-atrMult_sl    = input.float(2.0,  "ATR Multiplier (SL)",     minval=0.5, step=0.25,  group=grp_sl)
-slBuffer      = input.float(0.5,  "Box Floor Buffer (%)",    minval=0,   step=0.1,   group=grp_sl,
-                             tooltip="Stop placed this % below box floor.")
+slMode        = input.string("Box Ceiling", "Stop Loss Mode",
+                             options=["Box Ceiling", "ATR Trailing", "Both (tightest)"], group=grp_sl,
+                             tooltip="Box Ceiling: Darvas's actual method — stop just below the ceiling. A valid breakout must NOT re-enter the box.")
+atrLen_sl     = input.int  (14,   "ATR Length (SL)",           minval=5,               group=grp_sl)
+atrMult_sl    = input.float(2.0,  "ATR Multiplier (SL)",       minval=0.5, step=0.25,  group=grp_sl)
+slBuffer      = input.float(2.0,  "Ceiling Buffer % (SL)",     minval=0.1, step=0.1,   group=grp_sl,
+                             tooltip="Stop placed this % BELOW the box ceiling. Darvas method: if price returns below the ceiling the breakout has failed — exit immediately. Typical range: 1–3%.")
 
 // Visual Enhancements
 showHistBoxes    = input.bool (true, "Show Historical Boxes",         group=grp_vis)
@@ -194,14 +195,19 @@ breakoutBar  = breakoutRaw and breakoutVol and not inPosition
 high52       = ta.highest(high, 252)
 addSignal    = inPosition and high >= high52 and showAddSignals
 
-breakdownBar = inPosition and close < (boxFloor * (1.0 - slBuffer / 100.0))
+// Breakdown: price closes below the ceiling-based SL (re-enters box = breakout failed)
+breakdownBar = inPosition and close < (na(boxCeiling) ? na : boxCeiling * (1.0 - slBuffer / 100.0))
 
+// ── Stop Loss Levels ─────────────────────────────────────────────────────
+// Primary (Darvas method): stop just below the ceiling.
+// Rationale: a valid breakout must NOT return below the ceiling.
+// If it does → breakout failed → exit with a small 1-3% loss.
 atrSL        = close - atr * atrMult_sl
-boxFloorSL   = boxFloor * (1.0 - slBuffer / 100.0)
+boxCeilSL    = na(boxCeiling) ? na : boxCeiling * (1.0 - slBuffer / 100.0)   // e.g. ceil - 2%
 
-stopLossVal  = slMode == "Box Floor"    ? boxFloorSL :
+stopLossVal  = slMode == "Box Ceiling"   ? boxCeilSL :
                slMode == "ATR Trailing" ? atrSL      :
-               math.max(atrSL, boxFloorSL)
+               na(boxCeilSL)            ? atrSL      : math.max(atrSL, boxCeilSL)
 
 slBreached  = inPosition and low < stopLoss
 exitSignal  = breakdownBar or slBreached
@@ -294,16 +300,23 @@ if boxActive and not na(boxCeiling) and not na(boxFloor)
 // ─────────────────────────────────────────────
 if showLabels
     if breakoutBar
-        riskPct = (not na(stopLossVal) and close > 0) ? (close - stopLossVal) / close * 100.0 : na
+        // R:R calculated from entry (ceiling) not current close
         mmTgt   = na(boxCeiling) or na(boxFloor) ? na : boxCeiling + (boxCeiling - boxFloor)
+        riskAmt = na(boxCeilSL) or na(boxCeiling) ? na : boxCeiling - boxCeilSL
+        riskPct = (not na(riskAmt) and boxCeiling > 0) ? riskAmt / boxCeiling * 100.0 : na
+        rewAmt  = na(mmTgt) or na(boxCeiling) ? na : mmTgt - boxCeiling
+        rewPct  = (not na(rewAmt) and boxCeiling > 0) ? rewAmt / boxCeiling * 100.0 : na
+        rrRatio = (not na(riskPct) and riskPct > 0) ? rewPct / riskPct : na
         rPct    = na(riskPct) ? "n/a" : str.tostring(riskPct,  "#.#") + "%"
         tgtStr  = na(mmTgt)   ? "n/a" : str.tostring(mmTgt, format.mintick)
+        rrStr   = na(rrRatio) ? "n/a" : str.tostring(rrRatio, "#.##") + "x"
         label.new(bar_index, low,
              text      = "🚀 BREAKOUT\n" +
                          "Entry : " + str.tostring(close, format.mintick) + "\n" +
                          "SL    : " + str.tostring(stopLossVal, format.mintick) + "\n" +
                          "Risk  : " + rPct + "\n" +
-                         "Target: " + tgtStr,
+                         "Target: " + tgtStr + "\n" +
+                         "R:R   : " + rrStr,
              color     = C_BREAKOUT,
              textcolor = color.black,
              style     = label.style_label_up,
@@ -402,7 +415,7 @@ var table dash = na
 
 if showDash and barstate.islast
     if na(dash)
-        dash := table.new(position.top_right, 2, 11,
+        dash := table.new(position.top_right, 2, 12,
                           border_width=1,
                           border_color=color.new(color.white, 70),
                           bgcolor=color.new(color.black, 55))
@@ -454,10 +467,15 @@ if showDash and barstate.islast
     table.cell(dash, 1, 7, na(entryPrice) ? "n/a" : str.tostring(entryPrice, format.mintick),
                bgcolor=defColor, text_color=color.lime, text_size=size.small)
 
-    // Row 8 - Stop Loss
-    table.cell(dash, 0, 8, "Stop Loss",    bgcolor=defColor, text_color=color.white,   text_size=size.small)
-    table.cell(dash, 1, 8, na(stopLoss) ? "n/a" : str.tostring(stopLoss, format.mintick),
-               bgcolor=defColor, text_color=color.orange, text_size=size.small)
+    // Row 8 - Stop Loss (planned or live)
+    // Show planned ceiling-based SL even before entry (helps pre-breakout planning)
+    plannedSL  = na(boxCeiling) ? na : boxCeiling * (1.0 - slBuffer / 100.0)
+    slDisplay  = inPosition ? stopLoss : plannedSL
+    slLabel    = inPosition ? "Stop Loss" : "Planned SL"
+    slClr      = inPosition ? color.orange : color.new(color.orange, 50)
+    table.cell(dash, 0, 8, slLabel,        bgcolor=defColor, text_color=color.white,   text_size=size.small)
+    table.cell(dash, 1, 8, na(slDisplay) ? "n/a" : str.tostring(slDisplay, format.mintick),
+               bgcolor=defColor, text_color=slClr, text_size=size.small)
 
     // Row 9 - Unrealised PnL
     pnlPct   = (not na(entryPrice) and entryPrice > 0) ? (close - entryPrice) / entryPrice * 100.0 : na
@@ -472,6 +490,15 @@ if showDash and barstate.islast
     table.cell(dash, 0, 10, "Vol vs SMA",  bgcolor=defColor, text_color=color.white,   text_size=size.small)
     table.cell(dash, 1, 10, na(volRatio) ? "n/a" : str.tostring(volRatio, "#.##") + "x",
                bgcolor=defColor, text_color=volTxtClr, text_size=size.small)
+
+    // Row 11 - Planned R:R (pre-entry, uses ceiling as entry reference)
+    preRisk   = na(boxCeiling) ? na : slBuffer / 100.0 * 100.0    // risk% = buffer%
+    preReward = (na(boxCeiling) or na(boxFloor)) ? na : (boxCeiling - boxFloor) / boxCeiling * 100.0
+    preRR     = (not na(preRisk) and preRisk > 0 and not na(preReward)) ? preReward / preRisk : na
+    rrTxtClr  = na(preRR) ? color.gray : preRR >= 3.0 ? color.lime : preRR >= 1.5 ? color.yellow : color.red
+    table.cell(dash, 0, 11, "Planned R:R", bgcolor=defColor, text_color=color.white,   text_size=size.small)
+    table.cell(dash, 1, 11, na(preRR) ? "n/a" : str.tostring(preRR, "#.##") + "x",
+               bgcolor=defColor, text_color=rrTxtClr, text_size=size.small)
 
 // ─────────────────────────────────────────────
 //  15. PLOTS (Data Window)

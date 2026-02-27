@@ -57,8 +57,12 @@ CONFIG = {
     "vol_mult":        1.5,    # volume surge multiplier
     "require_vol":     True,   # require volume surge for BREAKOUT classification
 
-    # Stop loss
-    "sl_buffer_pct":   0.5,    # stop placed this % below box floor
+    # Stop loss — Darvas's actual method:
+    # Enter just above the ceiling; stop just BELOW the ceiling.
+    # Rationale: a valid breakout should NOT return below the ceiling.
+    # This gives a tight stop and far better R:R than floor-based stops.
+    # SL = ceiling * (1 - sl_ceil_buffer_pct / 100)
+    "sl_ceil_buffer_pct": 2.0,   # stop placed this % BELOW the box ceiling
 
     # Quality filters
     "min_rr":          1.0,    # minimum R:R ratio to classify as quality breakout
@@ -337,8 +341,11 @@ def analyse(symbol: str, cfg: dict) -> dict | None:
     if box_width_pct > cfg["max_box_width"]:
         return None
 
-    sl_price  = box_floor * (1.0 - cfg["sl_buffer_pct"] / 100.0)
-    mm_target = box_ceil  + (box_ceil - box_floor)     # measured move
+    # ── Stop loss (Darvas method: just below the ceiling, not the floor) ──
+    # Entry = ceiling breakout; SL = just below the ceiling.
+    # A valid Darvas breakout must NOT re-enter the box.
+    sl_price  = box_ceil  * (1.0 - cfg["sl_ceil_buffer_pct"] / 100.0)
+    mm_target = box_ceil  + (box_ceil - box_floor)     # measured move = 1 full box height
 
     dist_to_ceil = (box_ceil - close) / close * 100   # +ve = below ceiling
 
@@ -368,8 +375,10 @@ def analyse(symbol: str, cfg: dict) -> dict | None:
         status = "WATCHING"          # above ceiling but no volume — still watching
 
     # ── Risk / reward ─────────────────────────────────────────
-    risk_pct   = (close - sl_price)  / close * 100 if close > 0 else None
-    reward_pct = (mm_target - close) / close * 100 if close > 0 else None
+    # Entry price for R:R planning = ceiling (the actual entry point at breakout)
+    entry_for_rr = box_ceil
+    risk_pct   = (entry_for_rr - sl_price) / entry_for_rr * 100 if entry_for_rr > 0 else None
+    reward_pct = (mm_target - entry_for_rr) / entry_for_rr * 100 if entry_for_rr > 0 else None
     rr_ratio   = reward_pct / risk_pct if (risk_pct and risk_pct > 0) else None
 
     # ── Urgency tier (for APPROACHING stocks) ────────────────
