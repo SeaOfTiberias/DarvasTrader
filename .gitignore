@@ -37,7 +37,6 @@ logs/
 
 # Data / output (keep structure, not raw data)
 data/
-*.csv
 *.xlsx
 *.json
 !config/*.json
@@ -45,12 +44,11 @@ data/
 # Jupyter
 .ipynb_checkpoints/
 
-# Generated reports (HTML output from _morning_report.py)
+# Generated reports and scanner output
 scanner/reports/
-
-# Scanner output / debug text files
 scanner/last_results.txt
 scanner/tier_output.txt
+scanner/darvas_orders*.csv
 
 # Power BI scratch folder
 PBI/
